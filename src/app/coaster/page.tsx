@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { CoasterProvider } from '@/context/CoasterContext';
 import { MultiplayerContextProvider, useMultiplayerOptional } from '@/context/MultiplayerContext';
@@ -292,12 +293,15 @@ function CoasterPageContent() {
   }, []);
 
   useEffect(() => {
-    refreshSavedParks();
-    const params = new URLSearchParams(window.location.search);
-    const roomCode = params.get('room');
-    if (roomCode && roomCode.length === 5) {
-      window.location.replace(`/coaster/coop/${roomCode.toUpperCase()}`);
-    }
+    const frame = requestAnimationFrame(() => {
+      refreshSavedParks();
+      const params = new URLSearchParams(window.location.search);
+      const roomCode = params.get('room');
+      if (roomCode && roomCode.length === 5) {
+        window.location.replace(`/coaster/coop/${roomCode.toUpperCase()}`);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [refreshSavedParks]);
 
   const handleExitGame = () => {
@@ -421,12 +425,12 @@ function CoasterPageContent() {
                   Load Example
                 </Button>
 
-                <a
+                <Link
                   href="/"
                   className="w-full text-center py-2 text-sm font-light tracking-wide text-white/40 hover:text-white/70 transition-colors duration-200"
                 >
                   Back to IsoCity
-                </a>
+                </Link>
                 <a
                   href="https://github.com/amilich/isometric-city"
                   target="_blank"

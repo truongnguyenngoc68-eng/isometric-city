@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 export type CheatTrigger = 
   | { type: 'konami'; amount: 50000 }
   | { type: 'vinnie' }
-  | { type: 'motherlode'; amount: 50000 }
+  | { type: 'motherlode'; amount: 1000000 }
   | { type: 'fund'; amount: 10000 };
 
 const KONAMI_CODE = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
@@ -40,6 +40,20 @@ export function useCheatCodes() {
       konamiBufferRef.current.push(key.toLowerCase());
       if (konamiBufferRef.current.length > KONAMI_CODE.length) {
         konamiBufferRef.current.shift();
+      }
+
+      // Prevent 'b' or 'a' at the end of an active Konami sequence from triggering game hotkeys (e.g. 'b' -> bulldoze)
+      const konamiLen = konamiBufferRef.current.length;
+      if (konamiLen >= KONAMI_CODE.length - 1) {
+        const prefixLen = Math.min(konamiLen, KONAMI_CODE.length);
+        const recentKeys = konamiBufferRef.current.slice(-prefixLen);
+        const matchesPrefix = recentKeys.every((k, i) =>
+          k === KONAMI_CODE[i].toLowerCase()
+        );
+        if (matchesPrefix) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
       }
 
       // Check if Konami code matches (check if buffer ends with the sequence)
@@ -84,7 +98,7 @@ export function useCheatCodes() {
           typedBufferRef.current = '';
         } else if (normalizedBuffer.includes('motherlode')) {
           console.log('🎮 Cheat activated: motherlode');
-          setTriggeredCheat({ type: 'motherlode', amount: 50000 });
+          setTriggeredCheat({ type: 'motherlode', amount: 1000000 });
           typedBufferRef.current = '';
         } else if (normalizedBuffer.includes('fund')) {
           console.log('🎮 Cheat activated: fund');
@@ -94,10 +108,10 @@ export function useCheatCodes() {
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
 
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, true);
       if (konamiTimeoutRef.current) {
         clearTimeout(konamiTimeoutRef.current);
       }

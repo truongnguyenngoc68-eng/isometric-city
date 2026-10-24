@@ -2393,7 +2393,7 @@ export function CoasterGrid({
   isMobile = false,
 }: CoasterGridProps) {
   const { state, latestStateRef, placeAtTile, bulldozeTile, placeTrackLine } = useCoaster();
-  const { grid, gridSize, selectedTool, tick, coasters } = state;
+  const { grid, gridSize, selectedTool, tick, coasters, guests: allGuests } = state;
   
   // Create a lookup map from coaster ID to colors and category for track rendering
   const coasterInfoMap = useMemo(() => {
@@ -2654,8 +2654,8 @@ export function CoasterGrid({
     const viewRight = canvasSize.width / zoom - offset.x / zoom + CULL_MARGIN_X;
     const viewBottom = canvasSize.height / zoom - offset.y / zoom + CULL_MARGIN_BOTTOM;
     
-    const guestsByTile = new Map<string, typeof state.guests>();
-    state.guests.forEach(guest => {
+    const guestsByTile = new Map<string, typeof allGuests>();
+    allGuests.forEach(guest => {
       // Use effective tile position for z-ordering:
       // If progress >= 0.5, guest visually appears on target tile
       const effectiveX = guest.progress >= 0.5 ? guest.targetTileX : guest.tileX;
@@ -2693,13 +2693,13 @@ export function CoasterGrid({
     }
     const stationLoadingData: StationLoadingData[] = [];
     
-    state.coasters.forEach(coaster => {
+    coasters.forEach(coaster => {
       if (coaster.track.length === 0 || coaster.trackTiles.length === 0) return;
       
       // Validate that this coaster's track still exists in the grid
       // Skip rendering if the track tiles don't match the grid state
       const hasValidTrack = coaster.trackTiles.some(tile => {
-        const gridTile = state.grid[tile.y]?.[tile.x];
+        const gridTile = grid[tile.y]?.[tile.x];
         return gridTile?.coasterTrackId === coaster.id && gridTile?.trackPiece;
       });
       if (!hasValidTrack) return;
@@ -2708,10 +2708,10 @@ export function CoasterGrid({
       
       // Check if this coaster has an adjacent queue - if not, no guests can ride
       const coasterHasQueue = hasAdjacentQueue(
-        state.grid,
+        grid,
         coaster.stationTileX,
         coaster.stationTileY,
-        state.gridSize
+        gridSize
       );
       
       coaster.trains.forEach(train => {
@@ -2755,7 +2755,7 @@ export function CoasterGrid({
           if (!trackTile) return;
           
           // Validate that the grid tile still belongs to this coaster
-          const gridTile = state.grid[trackTile.y]?.[trackTile.x];
+          const gridTile = grid[trackTile.y]?.[trackTile.x];
           if (!gridTile?.trackPiece || gridTile.coasterTrackId !== coaster.id) return;
           
           // Use the coaster's track piece (which has the corrected direction based on flow)
@@ -3057,7 +3057,7 @@ const tile = grid[y][x];
     }
     
     ctx.restore();
-  }, [grid, gridSize, offset, zoom, canvasSize, tick, selectedTile, hoveredTile, selectedTool, spriteSheets, waterImage, state.guests, state.coasters, trackDragPreviewTiles, isTrackDragging, coasterInfoMap, incompleteTrackEnds]);
+  }, [grid, gridSize, offset, zoom, canvasSize, tick, selectedTile, hoveredTile, selectedTool, spriteSheets, waterImage, allGuests, coasters, trackDragPreviewTiles, isTrackDragging, coasterInfoMap, incompleteTrackEnds]);
   
   // Lighting canvas sizing
   useEffect(() => {

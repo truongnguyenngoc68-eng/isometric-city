@@ -623,7 +623,8 @@ export function Sidebar({ onExit }: SidebarProps) {
     const isHost = multiplayer?.connectionState === 'connected' && multiplayer?.roomCode && !multiplayer?.initialState;
     if (isHost && !hasShownShareModalRef.current) {
       hasShownShareModalRef.current = true;
-      setShowShareModal(true);
+      const frame = requestAnimationFrame(() => setShowShareModal(true));
+      return () => cancelAnimationFrame(frame);
     }
   }, [multiplayer?.connectionState, multiplayer?.roomCode, multiplayer?.initialState]);
   

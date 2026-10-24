@@ -211,12 +211,22 @@ export default function Game({ onExit }: { onExit?: () => void }) {
         clearTriggeredCheat();
         break;
 
+      case 'fund':
+        addMoney(triggeredCheat.amount);
+        addNotification(
+          gt('Emergency Funding!'),
+          gt('Federal grant approved. You received $10,000!'),
+          'trophy'
+        );
+        clearTriggeredCheat();
+        break;
+
       case 'vinnie':
         // Vinnie dialog is handled by VinnieDialog component
         clearTriggeredCheat();
         break;
     }
-  }, [triggeredCheat, addMoney, addNotification, clearTriggeredCheat]);
+  }, [triggeredCheat, addMoney, addNotification, clearTriggeredCheat, gt]);
   
   // Track barge deliveries to show occasional notifications
   const bargeDeliveryCountRef = useRef(0);

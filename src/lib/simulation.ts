@@ -1252,7 +1252,7 @@ export const SERVICE_RANGE_INCREASE_PER_LEVEL = 0.2; // 20% per level (Level 1: 
 export const SERVICE_UPGRADE_COST_BASE = 2; // Cost = baseCost * (2 ^ currentLevel)
 
 // Calculate service coverage from service buildings - optimized version
-function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage {
+function calculateServiceCoverage(grid: Tile[][], size: number, budget?: Budget): ServiceCoverage {
   const services = createServiceCoverage(size);
   
   // First pass: collect all service building positions (much faster than checking every tile)
@@ -1285,12 +1285,27 @@ function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage
     const { x, y, type, level } = building;
     const config = SERVICE_CONFIG[type as keyof typeof SERVICE_CONFIG];
     if (!config) continue;
+
+    // Scale service effectiveness by department budget funding (0% - 100%)
+    let fundingFactor = 1;
+    if (budget) {
+      if (type === 'power_plant') {
+        fundingFactor = (budget.power?.funding ?? 100) / 100;
+      } else if (type === 'water_tower') {
+        fundingFactor = (budget.water?.funding ?? 100) / 100;
+      } else {
+        const serviceKey = (config as { type: 'police' | 'fire' | 'health' | 'education' }).type;
+        fundingFactor = (budget[serviceKey]?.funding ?? 100) / 100;
+      }
+    }
+    if (fundingFactor <= 0) continue;
     
-    // Calculate effective range based on building level
+    // Calculate effective range based on building level and budget funding
     // Level 1: 100%, Level 2: 120%, Level 3: 140%, Level 4: 160%, Level 5: 180%
     const baseRange = config.range;
-    const effectiveRange = baseRange * (1 + (level - 1) * SERVICE_RANGE_INCREASE_PER_LEVEL);
+    const effectiveRange = baseRange * (1 + (level - 1) * SERVICE_RANGE_INCREASE_PER_LEVEL) * fundingFactor;
     const range = Math.floor(effectiveRange);
+    if (range <= 0) continue;
     const rangeSquared = range * range;
     
     // Calculate bounds to avoid checking tiles outside the grid
@@ -1335,7 +1350,7 @@ function calculateServiceCoverage(grid: Tile[][], size: number): ServiceCoverage
           if (distSquared <= rangeSquared) {
             // Only compute sqrt when we need the actual distance for coverage falloff
             const distance = Math.sqrt(distSquared);
-            const coverage = Math.max(0, (1 - distance / range) * 100);
+            const coverage = Math.max(0, (1 - distance / range) * 100 * fundingFactor);
             currentCoverage[ny][nx] = Math.min(100, currentCoverage[ny][nx] + coverage);
           }
         }
@@ -1390,7 +1405,7 @@ export function upgradeServiceBuilding(state: GameState, x: number, y: number): 
   };
   
   // Recalculate service coverage with new level
-  const services = calculateServiceCoverage(newGrid, state.gridSize);
+  const services = calculateServiceCoverage(newGrid, state.gridSize, state.budget);
   
   return {
     ...state,
@@ -1754,7 +1769,7 @@ function evolveBuilding(grid: Tile[][], x: number, y: number, services: ServiceC
 
 // Calculate city stats
 // effectiveTaxRate is the lagged tax rate used for demand calculations
-function calculateStats(grid: Tile[][], size: number, budget: Budget, taxRate: number, effectiveTaxRate: number, services: ServiceCoverage): Stats {
+function calculateStats(grid: Tile[][], size: number, budget: Budget, taxRate: number, effectiveTaxRate: number, services: ServiceCoverage, adjacentCities?: AdjacentCity[]): Stats {
   let population = 0;
   let jobs = 0;
   let totalPollution = 0;
@@ -1811,8 +1826,7 @@ function calculateStats(grid: Tile[][], size: number, budget: Budget, taxRate: n
 
       if (building.type === 'tree') treeCount++;
       if (building.type === 'water') waterCount++;
-      if (building.type === 'park' || building.type === 'park_large') parkCount++;
-      if (building.type === 'tennis') parkCount++; // Tennis courts count as parks
+      if (building.type !== 'tree' && GREEN_POLLUTION_REDUCERS.has(building.type)) parkCount++;
       if (tile.hasSubway) subwayTiles++;
       if (building.type === 'subway_station') subwayStations++;
       if (building.type === 'rail' || tile.hasRailOverlay) railTiles++;
@@ -1893,8 +1907,10 @@ function calculateStats(grid: Tile[][], size: number, budget: Budget, taxRate: n
   const commercialDemand = Math.min(100, Math.max(-100, commercialWithBonuses * taxMultiplier + taxAdditiveModifier * 0.8));
   const industrialDemand = Math.min(100, Math.max(-100, industrialWithBonuses * taxMultiplier + taxAdditiveModifier * 0.5));
 
-  // Calculate income and expenses
-  const income = Math.floor(population * taxRate * 0.1 + jobs * taxRate * 0.05);
+  // Calculate income and expenses (including +$200/month trade income per connected adjacent city)
+  const connectedCitiesCount = adjacentCities ? adjacentCities.filter(c => c.connected).length : 0;
+  const tradeIncome = connectedCitiesCount * 200;
+  const income = Math.floor(population * taxRate * 0.1 + jobs * taxRate * 0.05) + tradeIncome;
   
   let expenses = 0;
   expenses += Math.floor(budget.police.cost * budget.police.funding / 100);
@@ -1963,8 +1979,6 @@ function calculateAverageCoverage(coverage: number[][]): number {
 
 // PERF: Update budget costs based on buildings - single pass through grid
 function updateBudgetCosts(grid: Tile[][], budget: Budget): Budget {
-  const newBudget = { ...budget };
-  
   let policeCount = 0;
   let fireCount = 0;
   let hospitalCount = 0;
@@ -1974,43 +1988,52 @@ function updateBudgetCosts(grid: Tile[][], budget: Budget): Budget {
   let powerCount = 0;
   let waterCount = 0;
   let roadCount = 0;
+  let bridgeCount = 0;
+  let railTileCount = 0;
+  let railStationCount = 0;
   let subwayTileCount = 0;
   let subwayStationCount = 0;
 
   // PERF: Single pass through grid instead of two separate loops
   for (const row of grid) {
     for (const tile of row) {
-      // Count subway tiles
       if (tile.hasSubway) subwayTileCount++;
-      
-      // Count building types using switch for jump table optimization
-      switch (tile.building.type) {
+      if (tile.building.type === 'rail' || tile.hasRailOverlay) railTileCount++;
+
+      const bType = tile.building.type;
+      if (bType !== 'tree' && GREEN_POLLUTION_REDUCERS.has(bType)) {
+        parkCount++;
+      }
+
+      switch (bType) {
         case 'police_station': policeCount++; break;
         case 'fire_station': fireCount++; break;
         case 'hospital': hospitalCount++; break;
         case 'school': schoolCount++; break;
         case 'university': universityCount++; break;
-        case 'park': parkCount++; break;
-        case 'park_large': parkCount++; break;
-        case 'tennis': parkCount++; break;
         case 'power_plant': powerCount++; break;
         case 'water_tower': waterCount++; break;
         case 'road': roadCount++; break;
+        case 'bridge': bridgeCount++; break;
+        case 'rail_station': railStationCount++; break;
         case 'subway_station': subwayStationCount++; break;
       }
     }
   }
 
-  newBudget.police.cost = policeCount * 50;
-  newBudget.fire.cost = fireCount * 50;
-  newBudget.health.cost = hospitalCount * 100;
-  newBudget.education.cost = schoolCount * 30 + universityCount * 100;
-  newBudget.transportation.cost = roadCount * 2 + subwayTileCount * 3 + subwayStationCount * 25;
-  newBudget.parks.cost = parkCount * 10;
-  newBudget.power.cost = powerCount * 150;
-  newBudget.water.cost = waterCount * 75;
-
-  return newBudget;
+  return {
+    police: { ...budget.police, cost: policeCount * 50 },
+    fire: { ...budget.fire, cost: fireCount * 50 },
+    health: { ...budget.health, cost: hospitalCount * 100 },
+    education: { ...budget.education, cost: schoolCount * 30 + universityCount * 100 },
+    transportation: {
+      ...budget.transportation,
+      cost: (roadCount + bridgeCount) * 2 + railTileCount * 2 + subwayTileCount * 3 + (subwayStationCount + railStationCount) * 25,
+    },
+    parks: { ...budget.parks, cost: parkCount * 10 },
+    power: { ...budget.power, cost: powerCount * 150 },
+    water: { ...budget.water, cost: waterCount * 75 },
+  };
 }
 
 // PERF: Generate advisor messages - single pass through grid for all building counts
@@ -2154,7 +2177,7 @@ export function simulateTick(state: GameState): GameState {
   const size = state.gridSize;
   
   // Pre-calculate service coverage once (read-only operation on original grid)
-  const services = calculateServiceCoverage(state.grid, size);
+  const services = calculateServiceCoverage(state.grid, size, state.budget);
   
   // Track which rows have been modified to avoid unnecessary row cloning
   const modifiedRows = new Set<number>();
@@ -2207,18 +2230,6 @@ export function simulateTick(state: GameState): GameState {
         continue;
       }
       
-      // PERF: Completed service/park buildings with no state changes can skip heavy processing
-      // They only need utility updates and pollution decay
-      const isCompletedServiceBuilding = originalTile.zone === 'none' && 
-          originalBuilding.constructionProgress === 100 &&
-          !originalBuilding.onFire &&
-          originalBuilding.type !== 'grass' && 
-          originalBuilding.type !== 'tree' &&
-          originalBuilding.type !== 'empty';
-      if (isCompletedServiceBuilding && !needsPowerWaterUpdate && originalTile.pollution < 0.01) {
-        continue;
-      }
-      
       // Get modifiable tile for this position
       const tile = getModifiableTile(x, y);
       
@@ -2238,6 +2249,25 @@ export function simulateTick(state: GameState): GameState {
         if (canConstruct) {
           const constructionSpeed = getConstructionSpeed(tile.building.type);
           tile.building.constructionProgress = Math.min(100, tile.building.constructionProgress + constructionSpeed);
+        }
+      }
+
+      // Update population and jobs for completed non-zoned buildings (services, parks, special buildings)
+      if (tile.zone === 'none' &&
+          (tile.building.constructionProgress === undefined || tile.building.constructionProgress >= 100) &&
+          !tile.building.abandoned &&
+          !NO_CONSTRUCTION_TYPES.includes(tile.building.type) &&
+          tile.building.type !== 'rail') {
+        const stats = BUILDING_STATS[tile.building.type];
+        if (stats && (stats.maxPop > 0 || stats.maxJobs > 0)) {
+          const isUtilityBuilding = tile.building.type === 'power_plant' || tile.building.type === 'water_tower';
+          const efficiency = isUtilityBuilding ? 1 : (tile.building.powered ? 0.5 : 0) + (tile.building.watered ? 0.5 : 0);
+          tile.building.population = stats.maxPop > 0
+            ? Math.floor(stats.maxPop * Math.max(1, tile.building.level) * efficiency)
+            : 0;
+          tile.building.jobs = stats.maxJobs > 0
+            ? Math.floor(stats.maxJobs * Math.max(1, tile.building.level) * efficiency)
+            : 0;
         }
       }
 
@@ -2416,7 +2446,7 @@ export function simulateTick(state: GameState): GameState {
   const newEffectiveTaxRate = state.effectiveTaxRate + taxRateDiff * 0.03;
 
   // Calculate stats (using lagged effectiveTaxRate for demand calculations)
-  const newStats = calculateStats(newGrid, size, newBudget, state.taxRate, newEffectiveTaxRate, services);
+  const newStats = calculateStats(newGrid, size, newBudget, state.taxRate, newEffectiveTaxRate, services, state.adjacentCities);
   newStats.money = state.stats.money;
 
   // Smooth demand to prevent flickering in large cities
@@ -3026,8 +3056,8 @@ function findConnectedBridgeTiles(
 }
 
 /**
- * Check if a road tile at (x, y) is adjacent to a bridge start/end tile.
- * If so, return all the bridge tiles that should be deleted.
+ * Check if a road/rail tile at (x, y) is the anchor of an adjacent bridge start/end tile.
+ * Only matches bridges whose orientation and trackType align with this tile.
  */
 function findAdjacentBridgeTiles(
   grid: Tile[][],
@@ -3035,29 +3065,37 @@ function findAdjacentBridgeTiles(
   x: number,
   y: number
 ): { x: number; y: number }[] {
-  const directions = [
-    { dx: -1, dy: 0 },
-    { dx: 1, dy: 0 },
-    { dx: 0, dy: -1 },
-    { dx: 0, dy: 1 },
+  const tile = grid[y]?.[x];
+  if (!tile) return [];
+  const hasRoad = tile.building.type === 'road';
+  const hasRail = tile.building.type === 'rail' || !!tile.hasRailOverlay;
+
+  const directions: { dx: number; dy: number; orientation: BridgeOrientation }[] = [
+    { dx: -1, dy: 0, orientation: 'ns' },
+    { dx: 1, dy: 0, orientation: 'ns' },
+    { dx: 0, dy: -1, orientation: 'ew' },
+    { dx: 0, dy: 1, orientation: 'ew' },
   ];
   
-  for (const { dx, dy } of directions) {
+  const connected: { x: number; y: number }[] = [];
+  for (const { dx, dy, orientation } of directions) {
     const nx = x + dx;
     const ny = y + dy;
     if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize) {
       const neighbor = grid[ny][nx];
       if (neighbor.building.type === 'bridge') {
         const position = neighbor.building.bridgePosition;
-        // Check if this bridge tile is a start or end connected to our road
-        if (position === 'start' || position === 'end') {
-          return findConnectedBridgeTiles(grid, gridSize, nx, ny);
+        const bridgeOrientation = neighbor.building.bridgeOrientation || 'ns';
+        const trackType = neighbor.building.bridgeTrackType || 'road';
+        const matchesTrack = (trackType === 'road' && hasRoad) || (trackType === 'rail' && hasRail);
+        if ((position === 'start' || position === 'end') && bridgeOrientation === orientation && matchesTrack) {
+          connected.push(...findConnectedBridgeTiles(grid, gridSize, nx, ny));
         }
       }
     }
   }
   
-  return [];
+  return connected;
 }
 
 // Bulldoze a tile (or entire multi-tile building if applicable)
@@ -3079,8 +3117,8 @@ export function bulldozeTile(state: GameState, x: number, y: number): GameState 
     return { ...state, grid: newGrid };
   }
   
-  // Special handling for roads - check if adjacent to a bridge start/end
-  if (tile.building.type === 'road') {
+  // Special handling for roads and rails - check if anchoring a bridge start/end
+  if (tile.building.type === 'road' || tile.building.type === 'rail') {
     const adjacentBridgeTiles = findAdjacentBridgeTiles(newGrid, state.gridSize, x, y);
     if (adjacentBridgeTiles.length > 0) {
       // Delete the road first
@@ -3241,11 +3279,13 @@ export function generateRandomAdvancedCity(size: number = DEFAULT_GRID_SIZE, cit
   
   // Helper to create a completed building
   function createAdvancedBuilding(type: BuildingType): Building {
+    const level = type === 'grass' || type === 'empty' || type === 'water' || type === 'road' || type === 'bridge' ? 0 : Math.floor(Math.random() * 3) + 3;
+    const stats = BUILDING_STATS[type];
     return {
       type,
-      level: type === 'grass' || type === 'empty' || type === 'water' || type === 'road' || type === 'bridge' ? 0 : Math.floor(Math.random() * 3) + 3,
-      population: 0,
-      jobs: 0,
+      level,
+      population: stats?.maxPop ? Math.floor(stats.maxPop * Math.max(1, level)) : 0,
+      jobs: stats?.maxJobs ? Math.floor(stats.maxJobs * Math.max(1, level)) : 0,
       powered: true,
       watered: true,
       onFire: false,
@@ -3513,7 +3553,7 @@ export function generateRandomAdvancedCity(size: number = DEFAULT_GRID_SIZE, cit
   }
   
   // Calculate services and stats
-  const services = calculateServiceCoverage(grid, size);
+  const services = calculateServiceCoverage(grid, size, baseState.budget);
   
   // Set power and water for all buildings
   for (let y = 0; y < size; y++) {
@@ -4335,6 +4375,51 @@ export function shrinkGrid(
       });
     }
     grid.push(row);
+  }
+
+  // Clean up multi-tile buildings whose footprint extends beyond the shrunken border
+  for (let y = 0; y < newSize; y++) {
+    for (let x = 0; x < newSize; x++) {
+      const type = grid[y][x].building.type;
+      if (type !== 'empty' && type !== 'grass' && type !== 'water' && type !== 'road' && type !== 'bridge' && type !== 'rail' && type !== 'tree') {
+        const bSize = getBuildingSize(type);
+        if (x + bSize.width > newSize || y + bSize.height > newSize) {
+          for (let dy = 0; dy < bSize.height; dy++) {
+            for (let dx = 0; dx < bSize.width; dx++) {
+              if (x + dx < newSize && y + dy < newSize) {
+                grid[y + dy][x + dx].building = createBuilding('grass');
+                grid[y + dy][x + dx].zone = 'none';
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Clean up orphaned 'empty' placeholder tiles and bridges sliced by the shrunken border
+  for (let y = 0; y < newSize; y++) {
+    for (let x = 0; x < newSize; x++) {
+      const tile = grid[y][x];
+      if (tile.building.type === 'empty') {
+        const origin = findBuildingOrigin(grid, x, y, newSize);
+        if (!origin) {
+          tile.building = createBuilding('grass');
+          tile.zone = 'none';
+        }
+      } else if (tile.building.type === 'bridge') {
+        const connected = findConnectedBridgeTiles(grid, newSize, x, y);
+        const hasStart = connected.some(t => grid[t.y][t.x].building.bridgePosition === 'start');
+        const hasEnd = connected.some(t => grid[t.y][t.x].building.bridgePosition === 'end');
+        if (!hasStart || !hasEnd) {
+          for (const bt of connected) {
+            grid[bt.y][bt.x].building = createBuilding('water');
+            grid[bt.y][bt.x].zone = 'none';
+            grid[bt.y][bt.x].hasRailOverlay = false;
+          }
+        }
+      }
+    }
   }
   
   return { grid, newSize };

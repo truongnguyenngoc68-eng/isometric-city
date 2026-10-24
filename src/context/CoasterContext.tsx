@@ -1528,22 +1528,25 @@ export function CoasterProvider({
   useEffect(() => {
     if (!isStateReady) return;
     
-    setState(prev => {
-      const { grid: fixedGrid, coasters: fixedCoasters, changed } = ensureAllTracksHaveCoasters(
-        prev.grid,
-        prev.coasters
-      );
-      
-      if (changed) {
-        console.log('Fixed disconnected coaster tracks');
-        return {
-          ...prev,
-          grid: fixedGrid,
-          coasters: fixedCoasters,
-        };
-      }
-      return prev;
+    const frame = requestAnimationFrame(() => {
+      setState(prev => {
+        const { grid: fixedGrid, coasters: fixedCoasters, changed } = ensureAllTracksHaveCoasters(
+          prev.grid,
+          prev.coasters
+        );
+        
+        if (changed) {
+          console.log('Fixed disconnected coaster tracks');
+          return {
+            ...prev,
+            grid: fixedGrid,
+            coasters: fixedCoasters,
+          };
+        }
+        return prev;
+      });
     });
+    return () => cancelAnimationFrame(frame);
   }, [isStateReady]);
   
   // Auto-save periodically using async worker-based save (no stuttering!)

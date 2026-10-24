@@ -43,7 +43,7 @@ import { saveParkToIndex } from '@/games/coaster/saveUtils';
        initialStateLoadedRef.current = true;
        lastInitialStateRef.current = stateKey;
      }
-   }, [multiplayer?.initialState, coaster]);
+   }, [multiplayer, coaster]);
 
    const applyRemoteAction = useCallback((action: GameAction) => {
      if (!action || !action.type) {

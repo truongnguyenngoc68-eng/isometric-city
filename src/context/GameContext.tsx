@@ -671,37 +671,40 @@ export function GameProvider({ children, startFresh = false }: { children: React
   
   // Load game state and sprite pack from localStorage on mount (client-side only)
   useEffect(() => {
-    // Load sprite pack preference
-    const savedPackId = loadSpritePackId();
-    const pack = getSpritePack(savedPackId);
-    setCurrentSpritePack(pack);
-    setActiveSpritePack(pack);
-    
-    // Load day/night mode preference
-    const savedDayNightMode = loadDayNightMode();
-    setDayNightModeState(savedDayNightMode);
-    
-    // Load saved cities index
-    const cities = loadSavedCitiesIndex();
-    setSavedCities(cities);
-    
-    // Load game state (unless startFresh is true - used for co-op to start with a new city)
-    if (!startFresh) {
-      const saved = loadGameState();
-      if (saved) {
-        skipNextSaveRef.current = true; // Set skip flag BEFORE updating state
-        setState(saved);
-        setHasExistingGame(true);
+    const frame = requestAnimationFrame(() => {
+      // Load sprite pack preference
+      const savedPackId = loadSpritePackId();
+      const pack = getSpritePack(savedPackId);
+      setCurrentSpritePack(pack);
+      setActiveSpritePack(pack);
+      
+      // Load day/night mode preference
+      const savedDayNightMode = loadDayNightMode();
+      setDayNightModeState(savedDayNightMode);
+      
+      // Load saved cities index
+      const cities = loadSavedCitiesIndex();
+      setSavedCities(cities);
+      
+      // Load game state (unless startFresh is true - used for co-op to start with a new city)
+      if (!startFresh) {
+        const saved = loadGameState();
+        if (saved) {
+          skipNextSaveRef.current = true; // Set skip flag BEFORE updating state
+          setState(saved);
+          setHasExistingGame(true);
+        } else {
+          setHasExistingGame(false);
+        }
       } else {
         setHasExistingGame(false);
       }
-    } else {
-      setHasExistingGame(false);
-    }
-    // Mark as loaded immediately - the skipNextSaveRef will handle skipping the first save
-    hasLoadedRef.current = true;
-    // Mark state as ready - consumers should wait for this before using state
-    setIsStateReady(true);
+      // Mark as loaded immediately - the skipNextSaveRef will handle skipping the first save
+      hasLoadedRef.current = true;
+      // Mark state as ready - consumers should wait for this before using state
+      setIsStateReady(true);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [startFresh]);
   
   // Track the state that needs to be saved
@@ -712,9 +715,9 @@ export function GameProvider({ children, startFresh = false }: { children: React
   // PERF: Just mark that state has changed - defer expensive deep copy to actual save time
   const stateChangedRef = useRef(false);
   const latestStateRef = useRef(state);
-  latestStateRef.current = state;
   
   useEffect(() => {
+    latestStateRef.current = state;
     if (!hasLoadedRef.current) {
       return;
     }
@@ -1201,11 +1204,16 @@ export function GameProvider({ children, startFresh = false }: { children: React
             }
           }
         }
+        if (!parsed.id) {
+          parsed.id = generateUUID();
+        }
+        skipNextSaveRef.current = true;
         // Increment gameVersion to clear vehicles/entities when loading a new state
         setState((prev) => ({
           ...(parsed as GameState),
           gameVersion: (prev.gameVersion ?? 0) + 1,
         }));
+        saveGameState(parsed as GameState);
         return true;
       }
       return false;
@@ -1312,6 +1320,21 @@ export function GameProvider({ children, startFresh = false }: { children: React
           maxX: newSize - 1,
           maxY: newSize - 1,
         },
+        waterBodies: (prev.waterBodies || []).map(wb => ({
+          ...wb,
+          centerX: wb.centerX + 15,
+          centerY: wb.centerY + 15,
+          tiles: wb.tiles.map(t => ({ x: t.x + 15, y: t.y + 15 })),
+        })),
+        cities: (prev.cities || []).map(c => ({
+          ...c,
+          bounds: {
+            minX: 0,
+            minY: 0,
+            maxX: newSize - 1,
+            maxY: newSize - 1,
+          },
+        })),
         // Increment game version to reset vehicles/entities
         gameVersion: (prev.gameVersion ?? 0) + 1,
       };
@@ -1411,6 +1434,33 @@ export function GameProvider({ children, startFresh = false }: { children: React
           maxX: newSize - 1,
           maxY: newSize - 1,
         },
+        waterBodies: (prev.waterBodies || [])
+          .map(wb => {
+            const tiles = wb.tiles
+              .map(t => ({ x: t.x - 15, y: t.y - 15 }))
+              .filter(t => t.x >= 0 && t.x < newSize && t.y >= 0 && t.y < newSize);
+            if (tiles.length === 0) return null;
+            const avgX = Math.round(tiles.reduce((sum, t) => sum + t.x, 0) / tiles.length);
+            const avgY = Math.round(tiles.reduce((sum, t) => sum + t.y, 0) / tiles.length);
+            const shiftedX = wb.centerX - 15;
+            const shiftedY = wb.centerY - 15;
+            return {
+              ...wb,
+              centerX: shiftedX >= 0 && shiftedX < newSize ? shiftedX : avgX,
+              centerY: shiftedY >= 0 && shiftedY < newSize ? shiftedY : avgY,
+              tiles,
+            };
+          })
+          .filter((wb): wb is NonNullable<typeof wb> => wb !== null),
+        cities: (prev.cities || []).map(c => ({
+          ...c,
+          bounds: {
+            minX: 0,
+            minY: 0,
+            maxX: newSize - 1,
+            maxY: newSize - 1,
+          },
+        })),
         // Increment game version to reset vehicles/entities
         gameVersion: (prev.gameVersion ?? 0) + 1,
       };
@@ -1461,7 +1511,11 @@ export function GameProvider({ children, startFresh = false }: { children: React
     const savedState = loadSavedCityState();
     if (savedState) {
       skipNextSaveRef.current = true;
-      setState(savedState);
+      setState((prev) => ({
+        ...savedState,
+        gameVersion: (prev.gameVersion ?? 0) + 1,
+      }));
+      saveGameState(savedState);
       clearSavedCityStorage();
       return true;
     }
